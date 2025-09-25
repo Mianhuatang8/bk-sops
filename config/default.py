@@ -216,7 +216,7 @@ LOGGING = get_logging_config_dict(locals())
 # mako模板中：<script src="/a.js?v=${ STATIC_VERSION }"></script>
 # 如果静态资源修改了以后，上线前改这个版本号即可
 
-STATIC_VERSION = "3.32.1-p10"
+STATIC_VERSION = "3.32.8"
 DEPLOY_DATETIME = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
 
 STATICFILES_DIRS = [os.path.join(BASE_DIR, "static")]
@@ -927,4 +927,7 @@ ALLOWED_HTTP_PLUGIN_DOMAINS = env.ALLOWED_HTTP_PLUGIN_DOMAINS
 
 BK_DATA_REPORT_API_URL = env.BK_DATA_REPORT_API_URL
 
+# webhook配置
 MAX_WEBHOOK_RETRY_TIMES = env.MAX_WEBHOOK_RETRY_TIMES
+MAX_WEBHOOK_RETRY_INTERVAL = env.MAX_WEBHOOK_RETRY_INTERVAL
+MAX_WEBHOOK_TIMEOUT = env.MAX_WEBHOOK_TIMEOUT
