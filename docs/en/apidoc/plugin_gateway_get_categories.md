@@ -4,12 +4,14 @@ Get plugin categories exposed by the plugin gateway.
 
 #### Interface Parameters
 
-None
+| Field | Type | Required | Description |
+|------|------|------|------|
+| `plugin_source` | `string` | NO | source filter, `builtin` or `third_party`; omit to merge both sources |
 
 ### Request Example
 
 ```text
-GET /apigw/plugin-gateway/categories/
+GET /apigw/plugin-gateway/categories/?plugin_source=builtin
 ```
 
 ### Return Result Example
@@ -17,12 +19,11 @@ GET /apigw/plugin-gateway/categories/
 ```json
 {
   "result": true,
-  "data": {
-    "categories": [
-      {"id": "builtin", "name": "Built-in Plugins"},
-      {"id": "third_party", "name": "Third-Party Plugins"}
-    ]
-  },
+  "data": [
+    {"id": "all", "name": "全部"},
+    {"id": "DEVOPS", "name": "Development Tools"},
+    {"id": "JOB", "name": "JOB"}
+  ],
   "code": 0,
   "trace_id": "xxx"
 }
@@ -33,6 +34,6 @@ GET /apigw/plugin-gateway/categories/
 | Field | Type | Description |
 |------|------|------|
 | `result` | `bool` | whether the request succeeds |
-| `data.categories` | `list` | plugin category list |
+| `data` | `list` | plugin categories; `all` disables filtering and other IDs match `apis[].category` |
 | `message` | `string` | error message when failed |
 | `trace_id` | `string` | open telemetry trace_id |

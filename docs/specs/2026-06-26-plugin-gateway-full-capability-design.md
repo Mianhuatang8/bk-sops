@@ -84,11 +84,21 @@ BKFlow 侧的协议构造、空间准入与服务端校验在配套 BKFlow 设�
 
 ### 1.2 分类
 
-透传标准运维内部 `group/category`，避免只粗分 builtin / third_party 两档（沿用 `2026-04-20` 集成设计 5.3）。来源别名 `[标准运维内置] / [标准运维第三方]` 仅作为标签。**修复**当前 `PLUGIN_GATEWAY_CATEGORIES` 声明 `builtin` 但列表永不返回 `builtin` 的不一致。
+透传标准运维内部 `group/category`，避免只粗分 builtin / third_party 两档（沿用 `2026-04-20` 集成设计 5.3）。分类与列表接口支持用 `plugin_source=builtin|third_party` 固定过滤来源，供 BKFlow 配置为两个独立的顶层 API 插件入口；过滤后左侧分类仍返回各来源内部真实的 `group/category`，不会把 `builtin / third_party` 当作业务分类。两个入口在治理和执行层仍属于同一个标准运维来源。
 
 ### 1.3 schema 转换
 
 把组件 `inputs_format / outputs_format / form` 转成 v4 `inputs / outputs` schema。现有 `_convert_schema_fields` 是 JSON-Schema 形态雏形，需适配内置组件的 schema 形态。
+
+内置组件的 `form` 是可执行 JavaScript，不能跨系统透传。插件网关额外输出可选的声明式 `form_schema`，标准控件词汇限定为 JSON 可序列化配置：
+
+- 基础控件：`input / textarea / password / codeEditor`
+- 选择控件：`select / radio / checkbox / switcher`
+- 结构控件：`table`
+
+`form_schema` 存在时由对接方优先渲染；不支持的控件或未配置覆盖项继续按 `inputs` 类型生成通用表单。内置组件通过 `(component_code, field_key)` 显式覆盖表补充无法从 `inputs_format` 推导的 UI 语义，首批覆盖 JOB 快速执行脚本的 `job_content` 代码编辑器，以及高频多行文本和密码字段。覆盖表不得包含函数、可执行表达式或提供方私有组件。
+
+`tree / upload / cascader / category / combine` 等依赖远程数据源或动作函数的旧控件不在本轮伪兼容；后续需先定义统一数据源与动作协议，再逐类接入。
 
 ### 1.4 黑名单一致性
 

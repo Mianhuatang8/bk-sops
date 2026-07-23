@@ -11,7 +11,6 @@ an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express o
 specific language governing permissions and limitations under the License.
 """
 
-import copy
 from concurrent.futures import ThreadPoolExecutor
 from threading import RLock
 from urllib.parse import urlsplit
@@ -21,33 +20,69 @@ from django.conf import settings
 from django.urls import reverse
 
 from gcloud.plugin_gateway.constants import (
-    PLUGIN_GATEWAY_CATEGORIES,
+    PLUGIN_GATEWAY_ALL_CATEGORY,
     PLUGIN_SOURCE_BUILTIN,
     PLUGIN_SOURCE_THIRD_PARTY,
     RUNNING_STATUS_VALUE,
+    UNIFORM_API_WRAPPER_VERSION,
     decode_plugin_id,
 )
 from gcloud.plugin_gateway.exceptions import PluginGatewaySourceUnavailableError, PluginGatewayVersionNotFoundError
 from gcloud.plugin_gateway.models import PluginGatewaySourceConfig
 from gcloud.plugin_gateway.services.builtin_catalog import BuiltinCatalogService
+from gcloud.plugin_gateway.services.form_schema import build_structured_form_schema, convert_json_schema_fields
+from plugin_service.conf import PLUGIN_DISTRIBUTOR_NAME
 from plugin_service.exceptions import PluginServiceException
 from plugin_service.plugin_client import PluginServiceApiClient
 
 
 class PluginGatewayCatalogService:
     POLLING_STATUS_KEY = "data.status"
+    THIRD_PARTY_LIST_PAGE_SIZE = 200
     THIRD_PARTY_META_WORKERS = 8
     APIGW_BACKEND_PATH_PREFIX = "/apigw"
 
     @classmethod
-    def get_categories(cls):
-        return copy.deepcopy(PLUGIN_GATEWAY_CATEGORIES)
+    def get_categories(cls, plugin_source=None):
+        categories = {}
+        if not plugin_source or plugin_source == PLUGIN_SOURCE_BUILTIN:
+            for plugin in BuiltinCatalogService.list_plugins():
+                category = cls._stringify(plugin.get("category"))
+                if category:
+                    categories.setdefault(category, category)
+
+        if not plugin_source or plugin_source == PLUGIN_SOURCE_THIRD_PARTY:
+            tag_result = PluginServiceApiClient.get_plugin_tags_list()
+            if tag_result.get("result") and isinstance(tag_result.get("data"), list):
+                for tag in tag_result["data"]:
+                    category = cls._stringify(tag.get("code_name"))
+                    if category:
+                        categories.setdefault(category, cls._stringify(tag.get("name")) or category)
+
+        return [dict(PLUGIN_GATEWAY_ALL_CATEGORY)] + [
+            {"id": category, "name": categories[category]} for category in sorted(categories)
+        ]
 
     @classmethod
     def get_plugin_list(cls, request):
         meta = {"total": 0, "apis": []}
-        for item in cls._list_plugins():
-            item = copy.deepcopy(item)
+        plugin_source = request.GET.get("plugin_source")
+        for item in cls._list_plugins(plugin_source=plugin_source):
+            if plugin_source and item.get("plugin_source") != plugin_source:
+                continue
+
+            category = request.GET.get("category")
+            if category and category != PLUGIN_GATEWAY_ALL_CATEGORY["id"] and item.get("category") != category:
+                continue
+
+            keyword = request.GET.get("key", "").strip().casefold()
+            if keyword and not any(
+                keyword in cls._stringify(item.get(field)).casefold() for field in ("id", "name", "plugin_code")
+            ):
+                continue
+
+            item = dict(item)
+            item.setdefault("category_name", item.get("category", ""))
             detail_url = cls._build_public_api_url(
                 request,
                 "apigw_plugin_gateway_detail",
@@ -74,13 +109,16 @@ class PluginGatewayCatalogService:
             detail_schema = BuiltinCatalogService.get_plugin_detail(plugin["plugin_code"], selected_version)
             inputs = detail_schema.get("inputs", [])
             outputs = detail_schema.get("outputs", [])
+            form_schema = detail_schema.get("form_schema")
         else:
             detail_schema = cls._get_plugin_detail_schema(plugin["plugin_code"], selected_version)
-            inputs = cls._convert_schema_fields(
+            inputs = convert_json_schema_fields(
                 detail_schema.get("inputs"),
                 required=detail_schema.get("inputs", {}).get("required", []),
             )
-            outputs = cls._convert_schema_fields(detail_schema.get("outputs"), required=[])
+            outputs = convert_json_schema_fields(detail_schema.get("outputs"), required=[])
+            forms = detail_schema.get("forms") if isinstance(detail_schema.get("forms"), dict) else {}
+            form_schema = build_structured_form_schema(detail_schema.get("inputs"), forms.get("renderform"))
 
         detail = {
             "id": plugin["id"],
@@ -88,8 +126,10 @@ class PluginGatewayCatalogService:
             "plugin_source": plugin["plugin_source"],
             "plugin_code": plugin["plugin_code"],
             "plugin_version": selected_version,
+            "version": UNIFORM_API_WRAPPER_VERSION,
             "wrapper_version": plugin["wrapper_version"],
             "description": plugin.get("description", ""),
+            "desc": plugin.get("description", ""),
             "methods": ["POST"],
             "inputs": inputs,
             "outputs": outputs,
@@ -101,14 +141,22 @@ class PluginGatewayCatalogService:
                 "running_tag": {"key": cls.POLLING_STATUS_KEY, "value": RUNNING_STATUS_VALUE},
             },
         }
+        if form_schema is not None:
+            detail["form_schema"] = form_schema
         detail["url"] = cls._build_public_api_url(request, "apigw_plugin_gateway_run_create")
         detail["polling"]["url"] = cls._build_public_api_url(request, "apigw_plugin_gateway_run_status")
         return detail
 
-    @staticmethod
-    def _list_plugins():
-        plugins = BuiltinCatalogService.list_plugins() + PluginGatewayCatalogService._list_third_party_plugins()
-        plugins = PluginGatewayCatalogService._filter_do_not_open_plugins(plugins)
+    @classmethod
+    def _list_plugins(cls, plugin_source=None):
+        if plugin_source == PLUGIN_SOURCE_BUILTIN:
+            plugins = BuiltinCatalogService.list_plugins()
+        elif plugin_source == PLUGIN_SOURCE_THIRD_PARTY:
+            plugins = cls._list_third_party_plugins()
+        else:
+            plugins = BuiltinCatalogService.list_plugins() + cls._list_third_party_plugins()
+
+        plugins = cls._filter_do_not_open_plugins(plugins)
         return sorted(plugins, key=lambda item: (item["name"], item["id"]))
 
     @classmethod
@@ -129,15 +177,46 @@ class PluginGatewayCatalogService:
 
         return sorted(plugins, key=lambda item: (item["name"], item["id"]))
 
-    @staticmethod
-    def _get_third_party_plugin_entries():
-        result = PluginServiceApiClient.get_plugin_list(limit=200, offset=0)
-        if not result.get("result"):
-            raise PluginGatewaySourceUnavailableError(result.get("message", "query plugin list failed"))
-        return result.get("data", {}).get("plugins", [])
+    @classmethod
+    def _get_third_party_plugin_entries(cls, search_term=None):
+        plugins = []
+        offset = 0
+        expected_total = None
 
-    @staticmethod
-    def _build_third_party_plugin_reference(plugin, meta):
+        while True:
+            request_kwargs = {
+                "limit": cls.THIRD_PARTY_LIST_PAGE_SIZE,
+                "offset": offset,
+                "distributor_code_name": PLUGIN_DISTRIBUTOR_NAME,
+            }
+            if search_term:
+                request_kwargs["search_term"] = search_term
+            result = PluginServiceApiClient.get_plugin_list(**request_kwargs)
+            if not result.get("result"):
+                raise PluginGatewaySourceUnavailableError(result.get("message", "query plugin list failed"))
+
+            data = result.get("data") or {}
+            page_plugins = data.get("plugins")
+            total = data.get("count")
+            if not isinstance(page_plugins, list) or type(total) is not int or total < 0:
+                raise PluginGatewaySourceUnavailableError("query plugin list returned invalid pagination data")
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                raise PluginGatewaySourceUnavailableError("plugin list count changed during pagination")
+
+            plugins.extend(page_plugins)
+            if len(plugins) == expected_total:
+                break
+            if len(plugins) > expected_total or len(page_plugins) != cls.THIRD_PARTY_LIST_PAGE_SIZE:
+                raise PluginGatewaySourceUnavailableError("query plugin list returned incomplete pagination data")
+
+            offset += cls.THIRD_PARTY_LIST_PAGE_SIZE
+
+        return plugins
+
+    @classmethod
+    def _build_third_party_plugin_reference(cls, plugin, meta):
         if not meta:
             return None
 
@@ -145,19 +224,29 @@ class PluginGatewayCatalogService:
         if not versions:
             return None
 
-        latest_version = versions[-1]
-        category = meta.get("group") or meta.get("category") or meta.get("tag") or PLUGIN_SOURCE_THIRD_PARTY
+        # bk-plugin-framework returns versions in descending order.
+        latest_version = versions[0]
+        tag_info = plugin.get("tag_info") if isinstance(plugin.get("tag_info"), dict) else {}
+        category = (
+            cls._stringify(tag_info.get("code_name"))
+            or meta.get("group")
+            or meta.get("category")
+            or meta.get("tag")
+            or PLUGIN_SOURCE_THIRD_PARTY
+        )
+        category_name = cls._stringify(tag_info.get("name")) or category
         return {
             "id": plugin["code"],
             "name": plugin["name"],
             "plugin_source": PLUGIN_SOURCE_THIRD_PARTY,
             "plugin_code": plugin["code"],
             "group": category,
-            "wrapper_version": meta.get("framework_version") or meta.get("runtime_version") or "",
+            "wrapper_version": UNIFORM_API_WRAPPER_VERSION,
             "default_version": latest_version,
             "latest_version": latest_version,
             "versions": versions,
             "category": category,
+            "category_name": category_name,
             "description": meta.get("description", ""),
         }
 
@@ -174,7 +263,11 @@ class PluginGatewayCatalogService:
             return None
 
         plugin = next(
-            (item for item in cls._get_third_party_plugin_entries() if item["code"] == plugin_code),
+            (
+                item
+                for item in cls._get_third_party_plugin_entries(search_term=plugin_code)
+                if item["code"] == plugin_code
+            ),
             None,
         )
         if plugin is None:
@@ -251,22 +344,7 @@ class PluginGatewayCatalogService:
         return detail_result.get("data", {})
 
     @staticmethod
-    def _convert_schema_fields(schema, required):
-        if not isinstance(schema, dict):
-            return []
-
-        required_fields = set(required or [])
-        fields = []
-        for key, field in (schema.get("properties") or {}).items():
-            item = {
-                "key": key,
-                "name": field.get("title") or key,
-                "type": field.get("type", "string"),
-                "description": field.get("description", ""),
-            }
-            if key in required_fields:
-                item["required"] = True
-            if "default" in field:
-                item["default"] = field["default"]
-            fields.append(item)
-        return fields
+    def _stringify(value):
+        if value is None:
+            return ""
+        return str(value)

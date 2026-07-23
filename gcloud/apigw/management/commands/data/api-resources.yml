@@ -344,6 +344,16 @@ paths:
       description: 查询插件分类
       tags:
       - 限制接口
+      parameters:
+      - in: query
+        name: plugin_source
+        schema:
+          type: string
+          enum:
+          - builtin
+          - third_party
+        required: false
+        description: 插件来源；不传时合并内置与第三方插件分类
       responses:
         '200':
           content:
@@ -352,19 +362,16 @@ paths:
                 type: object
                 properties:
                   data:
-                    type: object
-                    properties:
-                      categories:
-                        type: array
-                        items:
-                          type: object
-                          properties:
-                            id:
-                              type: string
-                              description: 分类 ID
-                            name:
-                              type: string
-                              description: 分类名称
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: 分类 ID
+                        name:
+                          type: string
+                          description: 分类名称
                   result:
                     type: boolean
                     description: true/false 操作是否成功
@@ -398,6 +405,28 @@ paths:
       description: 查询插件列表
       tags:
       - 限制接口
+      parameters:
+      - in: query
+        name: plugin_source
+        schema:
+          type: string
+          enum:
+          - builtin
+          - third_party
+        required: false
+        description: 插件来源；不传时合并内置与第三方插件
+      - in: query
+        name: category
+        schema:
+          type: string
+        required: false
+        description: 插件分类；all 或不传表示不过滤
+      - in: query
+        name: key
+        schema:
+          type: string
+        required: false
+        description: 按插件 ID、名称或原始 code 模糊搜索
       responses:
         '200':
           content:
@@ -447,7 +476,10 @@ paths:
                               description: 可选版本列表
                             category:
                               type: string
-                              description: 插件分类
+                              description: 插件分类 ID
+                            category_name:
+                              type: string
+                              description: 插件分类展示名
                             description:
                               type: string
                               description: 插件描述
@@ -515,12 +547,18 @@ paths:
                       plugin_version:
                         type: string
                         description: 当前返回的插件版本
+                      version:
+                        type: string
+                        description: uniform_api 运行壳版本
                       wrapper_version:
                         type: string
                         description: 统一协议版本
                       description:
                         type: string
                         description: 插件描述
+                      desc:
+                        type: string
+                        description: uniform_api 兼容插件描述
                       url:
                         type: string
                         description: 创建执行记录的 URL
@@ -534,6 +572,9 @@ paths:
                         items:
                           type: object
                         description: 输入 schema 列表
+                      form_schema:
+                        type: object
+                        description: 可选的完整 JSON 表单 schema，存在时接入方应优先使用
                       outputs:
                         type: array
                         items:
